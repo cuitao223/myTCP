@@ -1,16 +1,24 @@
 package com.ouc.tcp.test;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+
 import com.ouc.tcp.client.TCP_Receiver_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 import com.ouc.tcp.message.TCP_SEGMENT;
 
 /**
- * 阶段 1：RDT2.0 接收端（校验和检错）
- * - 校验失败：回 NACK(-1)
- * - 校验成功：交付并回 ACK(seq)
+ * 阶段 2：RDT2.2（dup-ack）
+ * - 校验失败：重复上一次 ACK（不发 NACK）
+ * - 只按序交付；重复/乱序都回 lastAckedSeq
  */
 public class TCP_Receiver extends TCP_Receiver_ADT {
 
+    private static final int MSS = 100;
+    private int expectedSeq = 1;
+    private int lastAckedSeq = 0;
     private TCP_PACKET ackPack;
 
     public TCP_Receiver() {
@@ -23,26 +31,39 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
         int seq = recvPack.getTcpH().getTh_seq();
         boolean valid = (CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum());
 
-        if (valid) {
-            dataQueue.add(recvPack.getTcpS().getData());
-            deliver_data();
-            sendAck(seq, recvPack);
-        } else {
-            sendAck(-1, recvPack);
+        if (!valid) {
+            sendAck(lastAckedSeq, recvPack);
+            return;
         }
+
+        if (seq == expectedSeq) {
+            int[] data = recvPack.getTcpS().getData();
+            dataQueue.add(data);
+            lastAckedSeq = seq;
+            expectedSeq += (data == null ? MSS : data.length);
+            deliver_data();
+        }
+
+        sendAck(lastAckedSeq, recvPack);
     }
 
     @Override
     public void deliver_data() {
-        // 复用父类 dataQueue 的写文件逻辑：工程原版会写 recvData.txt
-        while (!dataQueue.isEmpty()) {
-            dataQueue.poll();
+        File fw = new File("recvData.txt");
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(fw, true))) {
+            while (!dataQueue.isEmpty()) {
+                int[] data = dataQueue.poll();
+                if (data == null) continue;
+                for (int v : data) writer.write(v + "\n");
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
     private void sendAck(int ackNum, TCP_PACKET recvPack) {
         tcpH.setTh_ack(ackNum);
-        tcpH.setTh_seq(ackNum <= 0 ? recvPack.getTcpH().getTh_seq() : ackNum);
+        tcpH.setTh_seq(ackNum <= 0 ? expectedSeq : ackNum);
         TCP_SEGMENT seg = new TCP_SEGMENT();
         tcpS = seg;
         ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());

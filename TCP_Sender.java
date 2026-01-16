@@ -4,14 +4,17 @@ import com.ouc.tcp.client.TCP_Sender_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 
 /**
- * 阶段 1：RDT2.0 发送端（仅检错 + 停等）
+ * 阶段 2：RDT2.2（停等 + dup-ack + 超时重传）
+ * - 接收端不发 NACK，出错/乱序时重复上一次 ACK
+ * - 发送端只接受“当前分组对应的 ACK”；若收到重复 ACK（上一次 ACK），立即重传当前分组
  *
- * - 只发送一个分组并等待 ACK/NACK
- * - 本阶段不考虑丢包/延迟（主要验证 CheckSum）
+ * RDT2.2 的经典假设是不发生丢包，因此不需要超时定时器；
+ * 本实现按该假设移除了超时重传，仅依赖 dup-ack 触发重传。
  */
 public class TCP_Sender extends TCP_Sender_ADT {
 
     private TCP_PACKET lastSent;
+    private boolean waitingAck = false;
 
     public TCP_Sender() {
         super();
@@ -20,7 +23,10 @@ public class TCP_Sender extends TCP_Sender_ADT {
 
     @Override
     public synchronized void rdt_send(int dataIndex, int[] appData) {
-        // 生成并发送数据包（使用父类初始化的 tcpH/tcpS）
+        while (waitingAck) {
+            waitACK();
+        }
+
         tcpH.setTh_ack(0);
         tcpH.setTh_seq(dataIndex * appData.length + 1);
         tcpS.setData(appData);
@@ -31,6 +37,7 @@ public class TCP_Sender extends TCP_Sender_ADT {
         packet.setTcpS(tcpS);
 
         lastSent = packet;
+        waitingAck = true;
         udt_send(packet);
         waitACK();
     }
@@ -43,22 +50,19 @@ public class TCP_Sender extends TCP_Sender_ADT {
 
     @Override
     public synchronized void recv(TCP_PACKET recvPack) {
-        // ACK 包校验失败：当作 NACK，直接重发
         if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
-            if (lastSent != null) {
-                udt_send(lastSent);
-            }
-            return;
+            return; // ACK 损坏：忽略，继续等待（RDT2.2 假设不丢包）
         }
 
         int ackNum = recvPack.getTcpH().getTh_ack();
-        if (ackNum <= 0) { // NACK
-            if (lastSent != null) {
-                udt_send(lastSent);
-            }
-        } else {
-            // ACK：结束等待
+        if (!waitingAck || lastSent == null) return;
+
+        if (ackNum == lastSent.getTcpH().getTh_seq()) {
+            waitingAck = false;
             notifyAll();
+        } else {
+            // 收到重复 ACK（对上一个按序分组的确认）：认为当前分组出错，立刻重传
+            udt_send(lastSent);
         }
     }
 
@@ -71,4 +75,3 @@ public class TCP_Sender extends TCP_Sender_ADT {
         }
     }
 }
-
