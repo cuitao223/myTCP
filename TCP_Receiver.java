@@ -11,11 +11,12 @@ import com.ouc.tcp.client.TCP_Receiver_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 import com.ouc.tcp.message.TCP_SEGMENT;
 
-/** 阶段 4：SR 接收端（窗口内乱序缓存 + 逐包 ACK）。 */
+/** 阶段 4：TCP 接收端（窗口内乱序缓存 + 累计 ACK(lastAckedSeq)）。 */
 public class TCP_Receiver extends TCP_Receiver_ADT {
     private static final int MSS = 100;
     private static final int WIN = 5;
     private int expectedSeq = 1;
+    private int lastAckedSeq = 0;
     private final Map<Integer, int[]> buf = new HashMap<Integer, int[]>();
     private TCP_PACKET ackPack;
 
@@ -25,24 +26,25 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
     public synchronized void rdt_recv(TCP_PACKET recvPack) {
         int seq = recvPack.getTcpH().getTh_seq();
         boolean valid = (CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum());
-        if (!valid) return;
-        int windowEnd = expectedSeq + (WIN - 1) * MSS;
-        if (seq < expectedSeq) { sendAck(seq, recvPack); return; }
-        if (seq > windowEnd) return;
-        int[] data = recvPack.getTcpS().getData();
-        if (seq == expectedSeq) {
-            dataQueue.add(data);
-            expectedSeq += (data == null ? MSS : data.length);
-            while (buf.containsKey(expectedSeq)) {
-                int[] d = buf.remove(expectedSeq);
-                dataQueue.add(d);
-                expectedSeq += (d == null ? MSS : d.length);
+        if (valid) {
+            if (seq == expectedSeq) {
+                int[] data = recvPack.getTcpS().getData();
+                dataQueue.add(data);
+                lastAckedSeq = seq;
+                expectedSeq += (data == null ? MSS : data.length);
+                while (buf.containsKey(expectedSeq)) {
+                    int[] d = buf.remove(expectedSeq);
+                    dataQueue.add(d);
+                    lastAckedSeq = expectedSeq;
+                    expectedSeq += (d == null ? MSS : d.length);
+                }
+                deliver_data();
+            } else if (seq > expectedSeq) {
+                int windowEnd = expectedSeq + (WIN - 1) * MSS;
+                if (seq <= windowEnd) buf.putIfAbsent(seq, recvPack.getTcpS().getData());
             }
-            deliver_data();
-        } else {
-            buf.putIfAbsent(seq, data);
         }
-        sendAck(seq, recvPack);
+        sendAck(lastAckedSeq, recvPack);
     }
 
     @Override
