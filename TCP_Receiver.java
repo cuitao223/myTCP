@@ -10,9 +10,8 @@ import com.ouc.tcp.message.TCP_PACKET;
 import com.ouc.tcp.message.TCP_SEGMENT;
 
 /**
- * 阶段 2：RDT2.2（dup-ack）
- * - 校验失败：重复上一次 ACK（不发 NACK）
- * - 只按序交付；重复/乱序都回 lastAckedSeq
+ * 阶段 3：RDT3.0 接收端（dup-ack）
+ * - 只按序交付；乱序/重复/校验错：重复 lastAckedSeq
  */
 public class TCP_Receiver extends TCP_Receiver_ADT {
 
@@ -31,12 +30,7 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
         int seq = recvPack.getTcpH().getTh_seq();
         boolean valid = (CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum());
 
-        if (!valid) {
-            sendAck(lastAckedSeq, recvPack);
-            return;
-        }
-
-        if (seq == expectedSeq) {
+        if (valid && seq == expectedSeq) {
             int[] data = recvPack.getTcpS().getData();
             dataQueue.add(data);
             lastAckedSeq = seq;

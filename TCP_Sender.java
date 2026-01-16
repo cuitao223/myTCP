@@ -1,20 +1,24 @@
 package com.ouc.tcp.test;
 
+import java.util.Timer;
+import java.util.TimerTask;
+
 import com.ouc.tcp.client.TCP_Sender_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 
 /**
- * 阶段 2：RDT2.2（停等 + dup-ack + 超时重传）
- * - 接收端不发 NACK，出错/乱序时重复上一次 ACK
- * - 发送端只接受“当前分组对应的 ACK”；若收到重复 ACK（上一次 ACK），立即重传当前分组
- *
- * RDT2.2 的经典假设是不发生丢包，因此不需要超时定时器；
- * 本实现按该假设移除了超时重传，仅依赖 dup-ack 触发重传。
+ * 阶段 3：RDT3.0（停等 + 超时重传，应对丢包/ACK丢失）
+ * - 接收端使用 dup-ack（重复 ACK），发送端只接受“确认当前分组”的 ACK
+ * - 超时重传 lastSent
  */
 public class TCP_Sender extends TCP_Sender_ADT {
 
+    private static final long TIMEOUT = 3000L;
+    private static final int MSS = 100;
+
     private TCP_PACKET lastSent;
     private boolean waitingAck = false;
+    private Timer timer;
 
     public TCP_Sender() {
         super();
@@ -39,6 +43,7 @@ public class TCP_Sender extends TCP_Sender_ADT {
         lastSent = packet;
         waitingAck = true;
         udt_send(packet);
+        startTimer();
         waitACK();
     }
 
@@ -51,18 +56,14 @@ public class TCP_Sender extends TCP_Sender_ADT {
     @Override
     public synchronized void recv(TCP_PACKET recvPack) {
         if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
-            return; // ACK 损坏：忽略，继续等待（RDT2.2 假设不丢包）
+            return;
         }
-
         int ackNum = recvPack.getTcpH().getTh_ack();
         if (!waitingAck || lastSent == null) return;
-
         if (ackNum == lastSent.getTcpH().getTh_seq()) {
             waitingAck = false;
+            cancelTimer();
             notifyAll();
-        } else {
-            // 收到重复 ACK（对上一个按序分组的确认）：认为当前分组出错，立刻重传
-            udt_send(lastSent);
         }
     }
 
@@ -74,4 +75,29 @@ public class TCP_Sender extends TCP_Sender_ADT {
             Thread.currentThread().interrupt();
         }
     }
+
+    private void startTimer() {
+        cancelTimer();
+        timer = new Timer();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                synchronized (TCP_Sender.this) {
+                    if (waitingAck && lastSent != null) {
+                        udt_send(lastSent);
+                        startTimer();
+                    }
+                }
+            }
+        }, TIMEOUT);
+    }
+
+    private void cancelTimer() {
+        if (timer != null) {
+            timer.cancel();
+            timer.purge();
+            timer = null;
+        }
+    }
 }
+

@@ -4,7 +4,7 @@ import java.util.zip.CRC32;
 
 import com.ouc.tcp.message.TCP_PACKET;
 
-/** 阶段 2：RDT2.2 校验和（同阶段 1）。 */
+/** 阶段 3：RDT3.0 校验和。 */
 public class CheckSum {
     public static short computeChkSum(TCP_PACKET tcpPack) {
         CRC32 crc = new CRC32();
