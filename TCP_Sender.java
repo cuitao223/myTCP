@@ -1,23 +1,22 @@
 package com.ouc.tcp.test;
 
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 
 import com.ouc.tcp.client.TCP_Sender_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 
-/**
- * 阶段 3：RDT3.0（停等 + 超时重传，应对丢包/ACK丢失）
- * - 接收端使用 dup-ack（重复 ACK），发送端只接受“确认当前分组”的 ACK
- * - 超时重传 lastSent
- */
+/** 阶段 4：GBN 发送端（累计 ACK + 单定时器 + 超时重传窗口内所有未确认）。 */
 public class TCP_Sender extends TCP_Sender_ADT {
-
     private static final long TIMEOUT = 3000L;
+    private static final int WIN = 5;
     private static final int MSS = 100;
 
-    private TCP_PACKET lastSent;
-    private boolean waitingAck = false;
+    private final Map<Integer, TCP_PACKET> win = new LinkedHashMap<Integer, TCP_PACKET>();
+    private int nextSeq = 1;
     private Timer timer;
 
     public TCP_Sender() {
@@ -26,49 +25,51 @@ public class TCP_Sender extends TCP_Sender_ADT {
     }
 
     @Override
-    public synchronized void rdt_send(int dataIndex, int[] appData) {
-        while (waitingAck) {
-            waitACK();
+    public void rdt_send(int dataIndex, int[] appData) {
+        int seq = dataIndex * appData.length + 1;
+        TCP_PACKET p = build(seq, appData);
+        synchronized (this) {
+            while (win.size() >= WIN) {
+                waitACK();
+            }
+            win.put(seq, p);
+            nextSeq = Math.max(nextSeq, seq + MSS);
+            udt_send(p);
+            if (win.size() == 1) startTimer();
         }
-
-        tcpH.setTh_ack(0);
-        tcpH.setTh_seq(dataIndex * appData.length + 1);
-        tcpS.setData(appData);
-        TCP_PACKET packet = new TCP_PACKET(tcpH, tcpS, destinAddr);
-        tcpH.setTh_sum((short) 0);
-        tcpH.setTh_sum(CheckSum.computeChkSum(packet));
-        packet.setTcpH(tcpH);
-        packet.setTcpS(tcpS);
-
-        lastSent = packet;
-        waitingAck = true;
-        udt_send(packet);
-        startTimer();
-        waitACK();
     }
 
     @Override
     public void udt_send(TCP_PACKET packet) {
         packet.getTcpH().setTh_eflag((byte) 7);
-        this.client.send(packet);
+        client.send(packet);
     }
 
     @Override
-    public synchronized void recv(TCP_PACKET recvPack) {
-        if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
-            return;
-        }
+    public void recv(TCP_PACKET recvPack) {
+        if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) return;
         int ackNum = recvPack.getTcpH().getTh_ack();
-        if (!waitingAck || lastSent == null) return;
-        if (ackNum == lastSent.getTcpH().getTh_seq()) {
-            waitingAck = false;
-            cancelTimer();
-            notifyAll();
+        if (ackNum <= 0) return;
+        synchronized (this) {
+            Iterator<Map.Entry<Integer, TCP_PACKET>> it = win.entrySet().iterator();
+            boolean progressed = false;
+            while (it.hasNext()) {
+                Map.Entry<Integer, TCP_PACKET> e = it.next();
+                if (e.getKey() <= ackNum) {
+                    it.remove();
+                    progressed = true;
+                } else break;
+            }
+            if (progressed) {
+                if (win.isEmpty()) stopTimer();
+                else startTimer();
+                notifyAll();
+            }
         }
     }
 
     @Override
-    public synchronized void waitACK() {
+    public void waitACK() {
         try {
             wait(10);
         } catch (InterruptedException e) {
@@ -76,23 +77,33 @@ public class TCP_Sender extends TCP_Sender_ADT {
         }
     }
 
+    private TCP_PACKET build(int seq, int[] data) {
+        tcpH.setTh_ack(0);
+        tcpH.setTh_seq(seq);
+        tcpS.setData(data);
+        TCP_PACKET p = new TCP_PACKET(tcpH, tcpS, destinAddr);
+        tcpH.setTh_sum((short) 0);
+        tcpH.setTh_sum(CheckSum.computeChkSum(p));
+        p.setTcpH(tcpH);
+        p.setTcpS(tcpS);
+        return p;
+    }
+
     private void startTimer() {
-        cancelTimer();
+        stopTimer();
         timer = new Timer();
         timer.schedule(new TimerTask() {
             @Override
             public void run() {
                 synchronized (TCP_Sender.this) {
-                    if (waitingAck && lastSent != null) {
-                        udt_send(lastSent);
-                        startTimer();
-                    }
+                    for (TCP_PACKET p : win.values()) udt_send(p);
+                    if (!win.isEmpty()) startTimer();
                 }
             }
         }, TIMEOUT);
     }
 
-    private void cancelTimer() {
+    private void stopTimer() {
         if (timer != null) {
             timer.cancel();
             timer.purge();
