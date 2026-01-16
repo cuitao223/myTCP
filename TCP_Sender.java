@@ -9,19 +9,32 @@ import java.util.TimerTask;
 import com.ouc.tcp.client.TCP_Sender_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 
-/** 阶段 4：GBN 发送端（累计 ACK + 单定时器 + 超时重传窗口内所有未确认）。 */
+/** 阶段 4：SR 发送端（逐包 ACK + 每包计时器）。 */
 public class TCP_Sender extends TCP_Sender_ADT {
     private static final long TIMEOUT = 3000L;
     private static final int WIN = 5;
     private static final int MSS = 100;
 
-    private final Map<Integer, TCP_PACKET> win = new LinkedHashMap<Integer, TCP_PACKET>();
-    private int nextSeq = 1;
-    private Timer timer;
+    private static class State {
+        final TCP_PACKET p;
+        boolean acked;
+        Timer t;
+        Runnable action;
+        State(TCP_PACKET p) { this.p = p; }
+        void start(Runnable a) {
+            cancel();
+            action = a;
+            t = new Timer();
+            t.schedule(new TimerTask(){@Override public void run(){action.run();}}, TIMEOUT, TIMEOUT);
+        }
+        void cancel(){ if(t!=null){t.cancel(); t.purge(); t=null;} }
+    }
+
+    private final Map<Integer, State> win = new LinkedHashMap<Integer, State>();
 
     public TCP_Sender() {
         super();
-        this.initTCP_Sender(this);
+        initTCP_Sender(this);
     }
 
     @Override
@@ -29,13 +42,11 @@ public class TCP_Sender extends TCP_Sender_ADT {
         int seq = dataIndex * appData.length + 1;
         TCP_PACKET p = build(seq, appData);
         synchronized (this) {
-            while (win.size() >= WIN) {
-                waitACK();
-            }
-            win.put(seq, p);
-            nextSeq = Math.max(nextSeq, seq + MSS);
+            while (win.size() >= WIN) waitACK();
+            State st = new State(p);
+            win.put(seq, st);
             udt_send(p);
-            if (win.size() == 1) startTimer();
+            st.start(() -> { synchronized (TCP_Sender.this) { if (win.containsKey(seq)) udt_send(p);} });
         }
     }
 
@@ -51,30 +62,22 @@ public class TCP_Sender extends TCP_Sender_ADT {
         int ackNum = recvPack.getTcpH().getTh_ack();
         if (ackNum <= 0) return;
         synchronized (this) {
-            Iterator<Map.Entry<Integer, TCP_PACKET>> it = win.entrySet().iterator();
+            State st = win.get(ackNum);
+            if (st != null) { st.acked = true; st.cancel(); }
             boolean progressed = false;
+            Iterator<Map.Entry<Integer, State>> it = win.entrySet().iterator();
             while (it.hasNext()) {
-                Map.Entry<Integer, TCP_PACKET> e = it.next();
-                if (e.getKey() <= ackNum) {
-                    it.remove();
-                    progressed = true;
-                } else break;
+                Map.Entry<Integer, State> e = it.next();
+                if (e.getValue().acked) { e.getValue().cancel(); it.remove(); progressed=true; }
+                else break;
             }
-            if (progressed) {
-                if (win.isEmpty()) stopTimer();
-                else startTimer();
-                notifyAll();
-            }
+            if (progressed) notifyAll();
         }
     }
 
     @Override
     public void waitACK() {
-        try {
-            wait(10);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        try { wait(10); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
     private TCP_PACKET build(int seq, int[] data) {
@@ -84,31 +87,8 @@ public class TCP_Sender extends TCP_Sender_ADT {
         TCP_PACKET p = new TCP_PACKET(tcpH, tcpS, destinAddr);
         tcpH.setTh_sum((short) 0);
         tcpH.setTh_sum(CheckSum.computeChkSum(p));
-        p.setTcpH(tcpH);
-        p.setTcpS(tcpS);
+        p.setTcpH(tcpH); p.setTcpS(tcpS);
         return p;
-    }
-
-    private void startTimer() {
-        stopTimer();
-        timer = new Timer();
-        timer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                synchronized (TCP_Sender.this) {
-                    for (TCP_PACKET p : win.values()) udt_send(p);
-                    if (!win.isEmpty()) startTimer();
-                }
-            }
-        }, TIMEOUT);
-    }
-
-    private void stopTimer() {
-        if (timer != null) {
-            timer.cancel();
-            timer.purge();
-            timer = null;
-        }
     }
 }
 

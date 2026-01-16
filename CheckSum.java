@@ -1,10 +1,9 @@
 package com.ouc.tcp.test;
 
 import java.util.zip.CRC32;
-
 import com.ouc.tcp.message.TCP_PACKET;
 
-/** 阶段 4：GBN 校验和。 */
+/** 阶段 4：SR 校验和。 */
 public class CheckSum {
     public static short computeChkSum(TCP_PACKET tcpPack) {
         CRC32 crc = new CRC32();
