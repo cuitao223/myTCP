@@ -3,7 +3,7 @@ package com.ouc.tcp.test;
 import java.util.zip.CRC32;
 import com.ouc.tcp.message.TCP_PACKET;
 
-/** 阶段 4：TCP（可靠传输，不含拥塞控制）校验和。 */
+/** 阶段 5：TCP Tahoe 校验和。 */
 public class CheckSum {
     public static short computeChkSum(TCP_PACKET tcpPack) {
         CRC32 crc = new CRC32();

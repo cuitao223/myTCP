@@ -11,7 +11,7 @@ import com.ouc.tcp.client.TCP_Receiver_ADT;
 import com.ouc.tcp.message.TCP_PACKET;
 import com.ouc.tcp.message.TCP_SEGMENT;
 
-/** 阶段 4：TCP 接收端（窗口内乱序缓存 + 累计 ACK(lastAckedSeq)）。 */
+/** 阶段 5：TCP Tahoe 接收端（缓存乱序但回累计 ACK(lastAckedSeq)，形成 dupACK）。 */
 public class TCP_Receiver extends TCP_Receiver_ADT {
     private static final int MSS = 100;
     private static final int WIN = 5;
@@ -20,7 +20,10 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
     private final Map<Integer, int[]> buf = new HashMap<Integer, int[]>();
     private TCP_PACKET ackPack;
 
-    public TCP_Receiver() { super(); initTCP_Receiver(this); }
+    public TCP_Receiver() {
+        super();
+        initTCP_Receiver(this);
+    }
 
     @Override
     public synchronized void rdt_recv(TCP_PACKET recvPack) {
@@ -40,8 +43,9 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
                 }
                 deliver_data();
             } else if (seq > expectedSeq) {
-                int windowEnd = expectedSeq + (WIN - 1) * MSS;
-                if (seq <= windowEnd) buf.putIfAbsent(seq, recvPack.getTcpS().getData());
+                int end = expectedSeq + (WIN - 1) * MSS;
+                if (seq <= end)
+                    buf.putIfAbsent(seq, recvPack.getTcpS().getData());
             }
         }
         sendAck(lastAckedSeq, recvPack);
@@ -53,10 +57,14 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(fw, true))) {
             while (!dataQueue.isEmpty()) {
                 int[] data = dataQueue.poll();
-                if (data == null) continue;
-                for (int v : data) writer.write(v + "\n");
+                if (data == null)
+                    continue;
+                for (int v : data)
+                    writer.write(v + "\n");
             }
-        } catch (IOException e) { e.printStackTrace(); }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void sendAck(int ackNum, TCP_PACKET recvPack) {
@@ -71,6 +79,8 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
     }
 
     @Override
-    public void reply(TCP_PACKET replyPack) { replyPack.getTcpH().setTh_eflag((byte) 7); client.send(replyPack); }
+    public void reply(TCP_PACKET replyPack) {
+        replyPack.getTcpH().setTh_eflag((byte) 7);
+        client.send(replyPack);
+    }
 }
-
